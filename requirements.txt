@@ -1,0 +1,9 @@
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+pvlib
+openpyxl
+pymoo
+tqdm
