@@ -10,10 +10,18 @@ import pandas as pd
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.optimize import minimize
-from pymoo.operators.crossover.sbx import IntegerSBX
 from pymoo.operators.mutation.pm import PolynomialMutation
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
+from pymoo.operators.repair.rounding import RoundingRepair
 from pymoo.termination import get_termination
+
+try:
+    from pymoo.operators.crossover.sbx import IntegerSBX
+except ImportError:  # pymoo >= 0.6.2 exposes SBX without IntegerSBX
+    from pymoo.operators.crossover.sbx import SBX
+
+    def IntegerSBX(prob=0.9):
+        return SBX(prob=prob, vtype=float, repair=RoundingRepair())
 
 try:
     from pymoo.core.problem import StarmapParallelization
