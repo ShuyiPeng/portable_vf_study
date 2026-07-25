@@ -1,6 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -33,15 +34,16 @@ PLOT_CONFIGS = {
         "output_stem": "SP_fixed_light_pareto_compare",
         "title": None,
         "series": [
-            {"label": "Baseline", "file": None, "marker": "o", "color": "#1F78B4"},
-            {"label": "Fixed light", "file": "SP_fixed_light_14812.csv", "marker": "^", "color": "#E31A1C"},
+            {"label": "SP-S1", "file": None, "marker": "o", "color": "#1F78B4"},
+            {"label": "Fixed-light 14812", "file": "SP_fixed_light_14812.csv", "marker": "^", "color": "#E31A1C"},
+            {"label": "Fixed-light 18517", "file": "SP_fixed_light_18517.csv", "marker": "s", "color": "#33A02C"},
         ],
     },
     "price": {
         "output_stem": "SP_price_sensitivity_pareto",
         "title": None,
         "series": [
-            {"label": "Baseline", "file": None, "marker": "o", "color": "#1F78B4"},
+            {"label": "SP-S1", "file": None, "marker": "o", "color": "#1F78B4"},
             {"label": "Price 80%", "file": "SP_price_080.csv", "marker": "^", "color": "#33A02C"},
             {"label": "Price 120%", "file": "SP_price_120.csv", "marker": "s", "color": "#E31A1C"},
         ],
@@ -50,12 +52,15 @@ PLOT_CONFIGS = {
         "output_stem": "SP_export_limit_pareto",
         "title": None,
         "series": [
-            {"label": "Baseline", "file": None, "marker": "o", "color": "#1F78B4"},
+            {"label": "SP-S1", "file": None, "marker": "o", "color": "#1F78B4"},
             {"label": "Export 10%", "file": "SP_export_010.csv", "marker": "^", "color": "#33A02C"},
             {"label": "Export 50%", "file": "SP_export_050.csv", "marker": "s", "color": "#E31A1C"},
         ],
     },
 }
+
+FIXED_LIGHT_MARKERS = ["^", "s", "D", "v", "P", "X"]
+FIXED_LIGHT_COLORS = ["#E31A1C", "#33A02C", "#6A3D9A", "#FF7F00", "#A6CEE3", "#B15928"]
 
 
 def find_column(df: pd.DataFrame, candidates: list[str]) -> str:
@@ -86,26 +91,89 @@ def objective_values(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return co2, cash / 1e6
 
 
+def objective_point(df: pd.DataFrame) -> tuple[float, float]:
+    co2, cash_million = objective_values(df)
+    if len(co2) == 0:
+        raise ValueError("TOPSIS CSV does not contain any rows.")
+    return float(co2[0]), float(cash_million[0])
+
+
 def topsis_optimal_index(co2: np.ndarray, cash_million: np.ndarray) -> int:
-    co2_range = np.ptp(co2)
-    cash_range = np.ptp(cash_million)
-    co2_norm = np.zeros_like(co2) if co2_range == 0 else (co2 - co2.min()) / co2_range
-    cash_norm = np.zeros_like(cash_million) if cash_range == 0 else (cash_million - cash_million.min()) / cash_range
+    finite_mask = np.isfinite(co2) & np.isfinite(cash_million)
+    if not finite_mask.any():
+        raise ValueError("No finite CO2/cash objective rows available for TOPSIS.")
+
+    finite_indices = np.flatnonzero(finite_mask)
+    co2_valid = co2[finite_mask]
+    cash_valid = cash_million[finite_mask]
+    co2_range = np.ptp(co2_valid)
+    cash_range = np.ptp(cash_valid)
+    co2_norm = np.zeros_like(co2_valid) if co2_range == 0 else (co2_valid - co2_valid.min()) / co2_range
+    cash_norm = np.zeros_like(cash_valid) if cash_range == 0 else (cash_valid - cash_valid.min()) / cash_range
     distance_to_ideal = np.sqrt(co2_norm**2 + (1 - cash_norm)**2)
     distance_to_nadir = np.sqrt((1 - co2_norm)**2 + cash_norm**2)
     score = distance_to_nadir / (distance_to_ideal + distance_to_nadir)
-    return int(np.nanargmax(score))
+    return int(finite_indices[np.nanargmax(score)])
 
 
 def resolve_csv_path(file_name: str, output_dir: Path) -> Path:
     path = Path(file_name)
-    if path.is_absolute():
+    if path.is_absolute() or path.exists():
         return path
     return output_dir / path
 
 
-def plot_case(case_name: str, baseline_csv: Path, output_dir: Path):
-    config = PLOT_CONFIGS[case_name]
+def fixed_light_series(files: list[str], labels: Optional[list[str]] = None) -> list[dict]:
+    labels = labels if labels is not None else [Path(file_name).stem for file_name in files]
+    series = [{"label": "SP-S1", "file": None, "marker": "o", "color": "#1F78B4"}]
+    for index, (file_name, label) in enumerate(zip(files, labels)):
+        series.append({
+            "label": label,
+            "file": file_name,
+            "marker": FIXED_LIGHT_MARKERS[index % len(FIXED_LIGHT_MARKERS)],
+            "color": FIXED_LIGHT_COLORS[index % len(FIXED_LIGHT_COLORS)],
+        })
+    return series
+
+
+def plot_config(
+    case_name: str,
+    fixed_light_files: Optional[list[str]] = None,
+    fixed_light_labels: Optional[list[str]] = None,
+    output_stem: Optional[str] = None,
+) -> dict:
+    config = dict(PLOT_CONFIGS[case_name])
+    if case_name == "fixed_light" and fixed_light_files is not None:
+        config["series"] = fixed_light_series(fixed_light_files, fixed_light_labels)
+    if output_stem is not None:
+        config["output_stem"] = output_stem
+    return config
+
+
+def default_topsis_path(csv_file: Path) -> Path:
+    return csv_file.with_name(f"{csv_file.stem}_topsis.csv")
+
+
+def load_topsis_point(csv_file: Path, co2: np.ndarray, cash_million: np.ndarray) -> tuple[float, float, str]:
+    topsis_file = default_topsis_path(csv_file)
+    if topsis_file.exists():
+        topsis_df = pd.read_csv(topsis_file)
+        co2_point, cash_point = objective_point(topsis_df)
+        return co2_point, cash_point, str(topsis_file)
+
+    optimal_index = topsis_optimal_index(co2, cash_million)
+    return float(co2[optimal_index]), float(cash_million[optimal_index]), "computed"
+
+
+def plot_case(
+    case_name: str,
+    baseline_csv: Path,
+    output_dir: Path,
+    fixed_light_files: Optional[list[str]] = None,
+    fixed_light_labels: Optional[list[str]] = None,
+    output_stem: Optional[str] = None,
+):
+    config = plot_config(case_name, fixed_light_files, fixed_light_labels, output_stem)
     fig, ax = plt.subplots()
     legend_elements = [Line2D([0], [0], color="w", label=r"$\mathbf{Scenarios}$")]
 
@@ -126,19 +194,19 @@ def plot_case(case_name: str, baseline_csv: Path, output_dir: Path):
             label="_nolegend_",
         )
 
-        if series["file"] is not None:
-            optimal_index = topsis_optimal_index(co2, cash_million)
-            ax.scatter(
-                co2[optimal_index],
-                cash_million[optimal_index],
-                marker="*",
-                s=130,
-                color=series["color"],
-                edgecolors="black",
-                linewidths=0.8,
-                zorder=6,
-                label="_nolegend_",
-            )
+        topsis_co2, topsis_cash_million, topsis_source = load_topsis_point(csv_file, co2, cash_million)
+        ax.scatter(
+            topsis_co2,
+            topsis_cash_million,
+            marker="*",
+            s=130,
+            color=series["color"],
+            edgecolors="black",
+            linewidths=0.8,
+            zorder=6,
+            label="_nolegend_",
+        )
+        print(f"{case_name} / {series['label']} TOPSIS: {topsis_source}")
 
         legend_elements.append(
             Line2D(
@@ -161,7 +229,7 @@ def plot_case(case_name: str, baseline_csv: Path, output_dir: Path):
             [0],
             marker="o",
             color="w",
-            label="Pareto frontier",
+            label="Open markers: Pareto solutions",
             markeredgecolor="gray",
             markerfacecolor="none",
             markersize=7,
@@ -171,7 +239,7 @@ def plot_case(case_name: str, baseline_csv: Path, output_dir: Path):
             [0],
             marker="*",
             color="w",
-            label="TOPSIS-optimal",
+            label="Stars: TOPSIS-optimal",
             markerfacecolor="black",
             markeredgecolor="black",
             markersize=11,
@@ -211,6 +279,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-csv", required=True)
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--output-stem", default=None)
+    parser.add_argument(
+        "--fixed-light-files",
+        nargs="+",
+        default=None,
+        help="Fixed-light CSV files to compare when --case fixed_light is used.",
+    )
+    parser.add_argument(
+        "--fixed-light-labels",
+        nargs="+",
+        default=None,
+        help="Legend labels for --fixed-light-files.",
+    )
     parser.add_argument(
         "--case",
         choices=["all", *PLOT_CONFIGS.keys()],
@@ -220,9 +301,20 @@ def main():
 
     baseline_csv = Path(args.baseline_csv)
     output_dir = Path(args.output_dir)
+    if args.fixed_light_labels is not None and args.fixed_light_files is None:
+        parser.error("--fixed-light-labels can only be used with --fixed-light-files.")
+    if args.fixed_light_labels is not None and len(args.fixed_light_labels) != len(args.fixed_light_files):
+        parser.error("--fixed-light-labels must have the same number of values as --fixed-light-files.")
     cases = PLOT_CONFIGS.keys() if args.case == "all" else [args.case]
     for case_name in cases:
-        pdf_path, png_path = plot_case(case_name, baseline_csv, output_dir)
+        pdf_path, png_path = plot_case(
+            case_name,
+            baseline_csv,
+            output_dir,
+            fixed_light_files=args.fixed_light_files,
+            fixed_light_labels=args.fixed_light_labels,
+            output_stem=args.output_stem if args.case != "all" else None,
+        )
         print(f"Saved {case_name}: {pdf_path}")
         print(f"Saved {case_name}: {png_path}")
 

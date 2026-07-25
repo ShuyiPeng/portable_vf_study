@@ -20,6 +20,16 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--n-procs", type=int, default=1)
+
+
+
+
+
+
+
+
+
+    
     args = parser.parse_args()
 
     scale_name = format_scale_for_name(args.price_scale)

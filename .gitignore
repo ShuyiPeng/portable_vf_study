@@ -1,4 +1,3 @@
 __pycache__/
 *.py[cod]
-outputs/*
-!outputs/.gitkeep
+outputs/
